@@ -1,15 +1,10 @@
 import os
-import requests
-from bs4 import BeautifulSoup
-from notion_client import Client
 import time
-import re
-import json
 import sys
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+import json
 from datetime import datetime
+from notion_client import Client
+from notion_worker_tool import discover_facilities_for_hotel
 
 # Configuration from environment variables
 NOTION_TOKEN = os.getenv("NOTION_TOKEN", "ntn_F7497976754aQjBYJ7uYvrt2bOsEgRcJvJHM580GYkc7an")
@@ -26,77 +21,6 @@ HOTEL_FACILITIES_RELATION_PROP = "🛝\xa0 Facilities & Amenities"
 HOTEL_UPDATE_DATE_PROP = "Amenities last updated"
 FACILITY_NAME_PROP = "facilityname"
 FACILITY_ALT_TEXT_PROP = "Alt Text"
-
-# Extended synonyms for thorough matching
-FACILITY_SYNONYMS = {
-    "Apartment Option": ["Apartments", "Suites", "Family Rooms", "Kitchenette"],
-    "Direct Beach Access": ["on the beach", "beachfront", "oceanfront", "steps to the beach", "seafront"],
-    "Hot Tub": ["Whirlpool", "Jacuzzi", "Hot Tub", "Hydromassage"],
-    "Spa": ["Wellness", "Relaxation", "Spa Center", "Health Club"],
-    "Outdoor Playground": ["Playground", "Outdoor Play", "Play Area", "Kids' Playground"],
-    "Cooking Class": ["Culinary", "Cooking Workshop", "Gastronomy"],
-    "Cold Tub": ["Cold Plunge", "Ice Fountain", "Cold Water Pool"],
-    "Adults-only Pool": ["Adult Pool", "Quiet Pool", "18+ Pool"],
-    "Ice Cream Shop": ["Gelateria", "Ice Cream Parlor", "Gelato"],
-    "Game Room": ["Gaming", "Video Games", "Arcade", "Entertainment Room", "Billiards", "Pool Table"],
-    "Lake": ["Lakeside", "On the lake"],
-    "Steam Room": ["Steam Bath", "Turkish Bath", "Steam Sauna"],
-    "Art Studio for Children": ["Art Class", "Craft Room", "Painting", "Creative Workshop"],
-    "Serviced Beach": ["Beach Club", "Beach Service", "Sun loungers"],
-    "Villa Option": ["Chalet", "House", "Villas", "Bungalows", "Private Residence", "Cottage"],
-    "Snow Room": ["Snow Cabin", "Ice Room"],
-    "Sled Rental": ["Toboggans", "Sledging", "Sleigh"],
-    "Water Park": ["Aquapark", "Slides", "Water Slides"],
-    "Tennis Court": ["Tennis", "Racquet Sports"],
-    "Indoor Pool": ["Swimming Hall", "Indoor Swimming", "Covered Pool"],
-    "Golf Course": ["Golfing", "18-hole", "9-hole", "Fairway"],
-    "Live Entertainment Program": ["Live Shows", "Evening Entertainment", "Performances"],
-    "Spa Treatments": ["Massages", "Facials", "Therapies", "Treatments", "Body Scrub", "Massage"],
-    "Mini Golf": ["Crazy Golf", "Putting Green"],
-    "Outdoor Pool": ["Open-air Pool", "Main Pool", "Infinity Pool"],
-    "Bicycle Rental": ["Bikes", "Mountain Bike", "E-Bike", "Cycling", "Bicycles"],
-    "Pool for Children": ["Baby Pool", "Kids Pool", "Children's Pool", "Splash Pool", "Paddling Pool"],
-    "Go Kart Track": ["Bobby Car Track", "Race Car Track", "Push Car Track"],
-    "Sauna": ["Finnish Sauna", "Bio Sauna", "Infrared Sauna"],
-    "Theater": ["Stage", "Amphitheater", "Cinema"],
-    "Fitness Center": ["Gym", "Workout", "Fitness Room", "Exercise", "Health Suite"],
-    "Pet Friendly": ["Pets allowed", "Dogs allowed", "Pet-friendly"],
-    "Infrared Treatment": ["Infrared Cabin", "Infrared Rays"],
-    "Garden": ["Park", "Gardens", "Landscaped"],
-    "Spa for Children": ["Family Spa", "Kids' Spa"],
-    "Petting Zoo": ["Farm Animals", "Animal Interaction"],
-    "Indoor Play Area": ["Indoor Playground", "Soft Play", "Playroom"],
-    "Private Beach": ["Exclusive Beach", "Own Beach"],
-    "Swimming Pond": ["Bathing Lake", "Natural Pool"],
-    "Play Mud Room": ["Indoor Sandpit", "Sandbox", "Sand Play"],
-    "Football Pitch": ["Soccer Field", "Football Field"],
-    "Wood Workshop": ["Carpentry", "Woodwork"],
-    "Excursion Offering": ["Tours", "Guided Trips", "Sightseeing"],
-    "Private Pools": ["Plunge Pool", "Your own pool", "Room with pool"],
-    "Padel Court": ["Padel Tennis"],
-    "Beauty Salon": ["Hair Stylist", "Makeup", "Hairdresser", "Nail Salon"],
-    "Campfire": ["Fire Pit", "Bonfire"],
-    "Mascot": ["Character", "Hotel Mascot"],
-    "Magic School": ["Magic Class", "Magician"],
-    "Trampoline": ["Bouncing", "Trampolining"],
-    "Wine Cellar": ["Wine Tasting", "Wine Lounge", "Vinotheque", "Sommelier"],
-    "Farm": ["Farming", "Livestock"],
-    "Riding Stables": ["Horse Riding", "Equestrian", "Pony"],
-    "Hammam": ["Turkish Bath", "Oriental Spa"],
-    "Water Playground": ["Splash Pad", "Water Play Area"],
-    "Climbing Wall": ["Rock Climbing", "Bouldering"],
-    "Cinema": ["Movie Theater", "Film Screenings"],
-    "Ski In / Ski Out": ["Ski-to-door", "Slope-side"],
-    "Bouncy Castle": ["Bounce House", "Airwalk", "Inflatable"],
-    "Apple Orchard": ["Fruit trees"],
-    "Kids Club": ["Children's Club", "Mini Club", "Kids' World", "Junior Club"],
-    "Teen Club": ["Teens Club", "Young Adults", "Teenagers"],
-    "Baby Club": ["Nursery", "Creche", "Infant Care", "Baby Care"],
-    "Lazy River": ["River Pool"],
-    "Hot Springs": ["Thermal Bath", "Mineral Springs"],
-    "Pickleball Court": ["Pickleball"],
-    "Fishing Pond": ["Fishing Lake", "Angling"]
-}
 
 notion = Client(auth=NOTION_TOKEN)
 
@@ -121,8 +45,7 @@ def get_all_facilities():
             if page['properties'][FACILITY_ALT_TEXT_PROP]['rich_text']:
                 alt_text_raw = page['properties'][FACILITY_ALT_TEXT_PROP]['rich_text'][0]['plain_text']
                 alt_text_list = [t.strip() for t in alt_text_raw.split(',') if t.strip()]
-            extra_terms = FACILITY_SYNONYMS.get(name, [])
-            facilities.append({"id": page['id'], "name": name, "search_terms": list(set([name] + alt_text_list + extra_terms))})
+            facilities.append({"id": page['id'], "name": name, "alt_text": alt_text_list})
         if not response.get('has_more'): break
         start_cursor = response.get('next_cursor')
     return facilities
@@ -148,21 +71,10 @@ def get_all_hotels():
         start_cursor = response.get('next_cursor')
     return hotels
 
-def scrape_website(url):
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-        response = requests.get(url, timeout=20, headers=headers)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
-        for script in soup(["script", "style"]): script.extract()
-        text_content = soup.get_text(separator=' ', strip=True)
-        alt_texts = [img.get('alt', '') for img in soup.find_all('img') if img.get('alt')]
-        meta_description = soup.find('meta', attrs={'name': 'description'})
-        meta_content = meta_description['content'] if meta_description and meta_description.get('content') else ""
-        return (text_content + " " + " ".join(alt_texts) + " " + meta_content).lower(), None
-    except Exception as e: return "", str(e)
-
 def send_email_report(successes, failures):
+    import smtplib
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart
     if not EMAIL_PASSWORD: return
     msg = MIMEMultipart(); msg['From'] = EMAIL_SENDER; msg['To'] = EMAIL_RECEIVER; msg['Subject'] = "Hotel Facilities Sync Report"
     body = "The Hotel Facilities Sync process has completed.\n\nSUCCESSFULLY PROCESSED:\n"
@@ -177,31 +89,33 @@ def send_email_report(successes, failures):
 
 def main():
     if not NOTION_TOKEN: sys.exit(1)
-    print("Starting comprehensive hotel facilities sync...")
+    print("Starting sync via shared worker logic...")
     successes = []; failures = []
     try:
         facilities = get_all_facilities(); hotels = get_all_hotels()
     except Exception as e: print(f"Error fetching data from Notion: {e}"); sys.exit(1)
 
+    facility_map = {f['name']: f['id'] for f in facilities}
     today = datetime.now().strftime("%Y-%m-%d")
 
     for hotel in hotels:
         if not hotel['website']:
             failures.append((hotel['name'], "No website URL in Notion")); continue
-        print(f"Processing {hotel['name']}...")
-        content, error = scrape_website(hotel['website'])
-        if error:
-            failures.append((hotel['name'], f"Scraping error: {error}")); continue
 
+        print(f"Processing {hotel['name']}...")
+        discovery_result = discover_facilities_for_hotel(hotel['website'], facilities)
+
+        if "error" in discovery_result:
+            failures.append((hotel['name'], f"Discovery error: {discovery_result['error']}")); continue
+
+        matched_names = discovery_result['matched_facilities']
         matched_ids = set(hotel['existing_facility_ids'])
         newly_matched_count = 0
-        for facility in facilities:
-            if facility['id'] in matched_ids: continue
-            matched = False
-            for term in facility['search_terms']:
-                if term and re.search(r'\b' + re.escape(term.lower()) + r'(s|es)?\b', content):
-                    matched = True; break
-            if matched: matched_ids.add(facility['id']); newly_matched_count += 1
+
+        for name in matched_names:
+            fid = facility_map.get(name)
+            if fid and fid not in matched_ids:
+                matched_ids.add(fid); newly_matched_count += 1
 
         if newly_matched_count > 0:
             try:
@@ -217,6 +131,7 @@ def main():
             except Exception as e: failures.append((hotel['name'], f"Notion update error: {e}"))
         else:
             successes.append((hotel['name'], len(matched_ids)))
+
         time.sleep(0.5)
 
     send_email_report(successes, failures)
