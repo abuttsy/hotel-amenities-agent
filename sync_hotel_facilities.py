@@ -9,6 +9,7 @@ import sys
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from datetime import datetime
 
 # Configuration from environment variables
 NOTION_TOKEN = os.getenv("NOTION_TOKEN", "ntn_F7497976754aQjBYJ7uYvrt2bOsEgRcJvJHM580GYkc7an")
@@ -22,6 +23,7 @@ EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "qnjz ftif inex ipng")
 # Exact property names in Notion
 HOTEL_WEBSITE_PROP = "Website"
 HOTEL_FACILITIES_RELATION_PROP = "🛝\xa0 Facilities & Amenities"
+HOTEL_UPDATE_DATE_PROP = "Amenities last updated"
 FACILITY_NAME_PROP = "facilityname"
 FACILITY_ALT_TEXT_PROP = "Alt Text"
 
@@ -99,11 +101,6 @@ FACILITY_SYNONYMS = {
 notion = Client(auth=NOTION_TOKEN)
 
 def get_query_source(db_id):
-    """
-    In this specific Notion environment, databases use a 'data_sources' attribute.
-    We retrieve the first data source ID to use with the custom .query() method.
-    If standard SDK behavior is preferred, replace with notion.databases.query.
-    """
     db = notion.databases.retrieve(database_id=db_id)
     if hasattr(notion, 'data_sources') and 'data_sources' in db and db['data_sources']:
         return notion.data_sources, db['data_sources'][0]['id']
@@ -112,16 +109,11 @@ def get_query_source(db_id):
 def get_all_facilities():
     facilities = []
     endpoint, target_id = get_query_source(FACILITIES_DB_ID)
-
     start_cursor = None
     while True:
-        # Note: using keyword arguments to match both databases.query and data_sources.query
         query_kwargs = {"page_size": 100, "start_cursor": start_cursor}
-        if endpoint == notion.databases:
-            query_kwargs["database_id"] = target_id
-        else:
-            query_kwargs["data_source_id"] = target_id
-
+        if endpoint == notion.databases: query_kwargs["database_id"] = target_id
+        else: query_kwargs["data_source_id"] = target_id
         response = endpoint.query(**query_kwargs)
         for page in response['results']:
             name = page['properties'][FACILITY_NAME_PROP]['title'][0]['plain_text'] if page['properties'][FACILITY_NAME_PROP]['title'] else ""
@@ -129,13 +121,8 @@ def get_all_facilities():
             if page['properties'][FACILITY_ALT_TEXT_PROP]['rich_text']:
                 alt_text_raw = page['properties'][FACILITY_ALT_TEXT_PROP]['rich_text'][0]['plain_text']
                 alt_text_list = [t.strip() for t in alt_text_raw.split(',') if t.strip()]
-
             extra_terms = FACILITY_SYNONYMS.get(name, [])
-            facilities.append({
-                "id": page['id'],
-                "name": name,
-                "search_terms": list(set([name] + alt_text_list + extra_terms))
-            })
+            facilities.append({"id": page['id'], "name": name, "search_terms": list(set([name] + alt_text_list + extra_terms))})
         if not response.get('has_more'): break
         start_cursor = response.get('next_cursor')
     return facilities
@@ -143,32 +130,20 @@ def get_all_facilities():
 def get_all_hotels():
     hotels = []
     endpoint, target_id = get_query_source(HOTELS_DB_ID)
-
     start_cursor = None
     while True:
         query_kwargs = {"page_size": 100, "start_cursor": start_cursor}
-        if endpoint == notion.databases:
-            query_kwargs["database_id"] = target_id
-        else:
-            query_kwargs["data_source_id"] = target_id
-
+        if endpoint == notion.databases: query_kwargs["database_id"] = target_id
+        else: query_kwargs["data_source_id"] = target_id
         response = endpoint.query(**query_kwargs)
         for page in response['results']:
             website = page['properties'][HOTEL_WEBSITE_PROP]['url']
             hotel_name = "Unnamed Hotel"
-            # Find the title property
             for prop_name, prop_data in page['properties'].items():
                 if prop_data['type'] == 'title' and prop_data['title']:
-                    hotel_name = prop_data['title'][0]['plain_text']
-                    break
-
+                    hotel_name = prop_data['title'][0]['plain_text']; break
             existing_facility_ids = [rel['id'] for rel in page['properties'][HOTEL_FACILITIES_RELATION_PROP]['relation']]
-            hotels.append({
-                "id": page['id'],
-                "name": hotel_name,
-                "website": website,
-                "existing_facility_ids": existing_facility_ids
-            })
+            hotels.append({"id": page['id'], "name": hotel_name, "website": website, "existing_facility_ids": existing_facility_ids})
         if not response.get('has_more'): break
         start_cursor = response.get('next_cursor')
     return hotels
@@ -185,113 +160,65 @@ def scrape_website(url):
         meta_description = soup.find('meta', attrs={'name': 'description'})
         meta_content = meta_description['content'] if meta_description and meta_description.get('content') else ""
         return (text_content + " " + " ".join(alt_texts) + " " + meta_content).lower(), None
-    except Exception as e:
-        return "", str(e)
+    except Exception as e: return "", str(e)
 
 def send_email_report(successes, failures):
-    if not EMAIL_PASSWORD:
-        print("EMAIL_PASSWORD not set. Skipping report.")
-        return
-
-    subject = "Hotel Facilities Sync Report"
-    body = "The Hotel Facilities Sync process has completed.\n\n"
-
-    body += "SUCCESSFULLY PROCESSED:\n"
-    for hotel, count in successes:
-        body += f"- {hotel}: {count} total facilities\n"
-
+    if not EMAIL_PASSWORD: return
+    msg = MIMEMultipart(); msg['From'] = EMAIL_SENDER; msg['To'] = EMAIL_RECEIVER; msg['Subject'] = "Hotel Facilities Sync Report"
+    body = "The Hotel Facilities Sync process has completed.\n\nSUCCESSFULLY PROCESSED:\n"
+    for hotel, count in successes: body += f"- {hotel}: {count} total facilities\n"
     body += "\nFAILED / SKIPPED:\n"
-    for hotel, reason in failures:
-        body += f"- {hotel}: {reason}\n"
-
-    msg = MIMEMultipart()
-    msg['From'] = EMAIL_SENDER
-    msg['To'] = EMAIL_RECEIVER
-    msg['Subject'] = subject
+    for hotel, reason in failures: body += f"- {hotel}: {reason}\n"
     msg.attach(MIMEText(body, 'plain'))
-
     try:
-        server = smtplib.SMTP('smtp.gmail.com', 587)
-        server.starttls()
-        server.login(EMAIL_SENDER, EMAIL_PASSWORD)
-        server.send_message(msg)
-        server.quit()
+        server = smtplib.SMTP('smtp.gmail.com', 587); server.starttls(); server.login(EMAIL_SENDER, EMAIL_PASSWORD); server.send_message(msg); server.quit()
         print("Email report sent successfully.")
-    except Exception as e:
-        print(f"Failed to send email report: {e}")
+    except Exception as e: print(f"Failed to send email report: {e}")
 
 def main():
-    if not NOTION_TOKEN:
-        print("NOTION_TOKEN environment variable not set.")
-        sys.exit(1)
-
-    print("Starting hotel facilities sync...")
-    sys.stdout.flush()
-
-    successes = []
-    failures = []
-
+    if not NOTION_TOKEN: sys.exit(1)
+    print("Starting comprehensive hotel facilities sync...")
+    successes = []; failures = []
     try:
-        facilities = get_all_facilities()
-        print(f"Found {len(facilities)} facilities.")
+        facilities = get_all_facilities(); hotels = get_all_hotels()
+    except Exception as e: print(f"Error fetching data from Notion: {e}"); sys.exit(1)
 
-        hotels = get_all_hotels()
-        print(f"Found {len(hotels)} hotels.")
-    except Exception as e:
-        print(f"Error fetching data from Notion: {e}")
-        sys.exit(1)
+    today = datetime.now().strftime("%Y-%m-%d")
 
     for hotel in hotels:
         if not hotel['website']:
-            failures.append((hotel['name'], "No website URL in Notion"))
-            continue
-
+            failures.append((hotel['name'], "No website URL in Notion")); continue
         print(f"Processing {hotel['name']}...")
-        sys.stdout.flush()
-
         content, error = scrape_website(hotel['website'])
         if error:
-            failures.append((hotel['name'], f"Scraping error: {error}"))
-            continue
+            failures.append((hotel['name'], f"Scraping error: {error}")); continue
 
         matched_ids = set(hotel['existing_facility_ids'])
         newly_matched_count = 0
-
         for facility in facilities:
             if facility['id'] in matched_ids: continue
-
             matched = False
             for term in facility['search_terms']:
-                if not term: continue
-                # Match term with word boundaries and optional pluralization
-                pattern = r'\b' + re.escape(term.lower()) + r'(s|es)?\b'
-                if re.search(pattern, content):
-                    matched = True
-                    break
-
-            if matched:
-                matched_ids.add(facility['id'])
-                newly_matched_count += 1
+                if term and re.search(r'\b' + re.escape(term.lower()) + r'(s|es)?\b', content):
+                    matched = True; break
+            if matched: matched_ids.add(facility['id']); newly_matched_count += 1
 
         if newly_matched_count > 0:
             try:
                 notion.pages.update(
                     page_id=hotel['id'],
                     properties={
-                        HOTEL_FACILITIES_RELATION_PROP: {
-                            "relation": [{"id": fid} for fid in matched_ids]
-                        }
+                        HOTEL_FACILITIES_RELATION_PROP: {"relation": [{"id": fid} for fid in matched_ids]},
+                        HOTEL_UPDATE_DATE_PROP: {"date": {"start": today}}
                     }
                 )
                 successes.append((hotel['name'], len(matched_ids)))
-            except Exception as e:
-                failures.append((hotel['name'], f"Notion update error: {e}"))
+                print(f"Updated {hotel['name']} with {newly_matched_count} new facilities.")
+            except Exception as e: failures.append((hotel['name'], f"Notion update error: {e}"))
         else:
             successes.append((hotel['name'], len(matched_ids)))
-
         time.sleep(0.5)
 
     send_email_report(successes, failures)
 
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__": main()
