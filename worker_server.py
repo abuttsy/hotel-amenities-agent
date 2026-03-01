@@ -1,8 +1,18 @@
+import os
+import sys
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from typing import List, Optional
 import json
 from notion_worker_tool import discover_facilities_for_hotel
+
+# Validate required environment variables on startup
+if not os.getenv("NOTION_TOKEN"):
+    print("FATAL: NOTION_TOKEN environment variable is missing.")
+    sys.exit(1)
+if not os.getenv("FACILITIES_DB_ID"):
+    print("FATAL: FACILITIES_DB_ID environment variable is missing.")
+    sys.exit(1)
 
 app = FastAPI(title="Hotel Facilities Discovery Worker")
 
@@ -62,4 +72,6 @@ async def run_tool(input_data: ToolInput):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=3000)
+    # Railway/Render provide the PORT environment variable
+    port = int(os.getenv("PORT", 3000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
