@@ -4,3 +4,6 @@ requests
 fastapi
 uvicorn
 pydantic
+mcp
+starlette
+sse-starlette
