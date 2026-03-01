@@ -52,6 +52,7 @@ def get_notion_facilities():
 
     notion = Client(auth=token)
     try:
+        # Check for data_sources fallback
         db = notion.databases.retrieve(database_id=db_id)
         if hasattr(notion, 'data_sources') and 'data_sources' in db and db['data_sources']:
             endpoint = notion.data_sources
@@ -75,6 +76,7 @@ def get_notion_facilities():
             synonyms = []
             if props.get('Alt Text') and props['Alt Text']['rich_text']:
                 synonyms = [s.strip() for s in props['Alt Text']['rich_text'][0]['plain_text'].split(',') if s.strip()]
+
             facilities_data.append({"name": name, "synonyms": synonyms})
 
         _facilities_cache = facilities_data
@@ -83,16 +85,42 @@ def get_notion_facilities():
         logger.error(f"Failed to fetch synonyms from Notion: {e}")
         return []
 
-def discover_facilities_for_hotel(website_url, facilities=None, existing_facilities=None, hotel_name=None, facilities_data=None):
+def get_website_from_notion_page(hotel_page_url_or_id):
+    """
+    Extracts the website URL from a Notion hotel page.
+    """
+    token = os.getenv("NOTION_TOKEN")
+    if not token: return None, "NOTION_TOKEN missing"
+
+    # Extract ID from URL if necessary
+    page_id = hotel_page_url_or_id.split('/')[-1].split('?')[0].split('-')[-1]
+    if len(page_id) != 32:
+        # Try raw ID
+        page_id = hotel_page_url_or_id
+
+    notion = Client(auth=token)
+    try:
+        page = notion.pages.retrieve(page_id=page_id)
+        website = page['properties'].get('Website', {}).get('url')
+        if not website:
+            return None, f"No 'Website' property found on page {page_id}"
+        return website, None
+    except Exception as e:
+        return None, str(e)
+
+def discover_facilities_for_hotel(website_url=None, hotel_url=None, facilities=None, existing_facilities=None, hotel_name=None, facilities_data=None):
     """
     Exposed logic for discovery.
-
-    :param website_url: The URL to scrape.
-    :param facilities: Optional list of canonical names to filter the search.
-    :param existing_facilities: Optional list of names already linked.
-    :param hotel_name: Optional name for logging.
-    :param facilities_data: Optional pre-fetched list of dicts with 'name' and 'synonyms'.
     """
+    # If hotel_url is provided but website_url is not, look it up in Notion
+    if hotel_url and not website_url:
+        website_url, error = get_website_from_notion_page(hotel_url)
+        if error:
+            return {"error": f"Failed to get website from Notion: {error}"}
+
+    if not website_url:
+        return {"error": "Missing website_url or hotel_url"}
+
     sources, error = scrape_website_with_sources(website_url)
     if error:
         return {"error": f"Failed to scrape {website_url}: {error}"}
@@ -133,22 +161,7 @@ def discover_facilities_for_hotel(website_url, facilities=None, existing_facilit
 
     return {
         "hotel_name": hotel_name,
+        "website_url": website_url,
         "matched_facilities": matched_names,
         "evidence": evidence
     }
-
-if __name__ == "__main__":
-    import sys
-    if len(sys.argv) > 1:
-        try:
-            input_json = json.loads(sys.argv[1])
-            result = discover_facilities_for_hotel(
-                website_url=input_json.get("website_url"),
-                facilities=input_json.get("facilities"),
-                existing_facilities=input_json.get("existing_facilities"),
-                hotel_name=input_json.get("hotel_name"),
-                facilities_data=input_json.get("facilities_data")
-            )
-            print(json.dumps(result, indent=2))
-        except Exception as e:
-            print(json.dumps({"error": str(e)}))
