@@ -5,7 +5,7 @@ import logging
 from typing import List, Optional
 from mcp.server.fastmcp import FastMCP
 from starlette.responses import JSONResponse
-from notion_worker_tool import discover_facilities_for_hotel
+from notion_worker_tool import discover_facilities_for_hotel as core_discover_logic
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -22,7 +22,7 @@ mcp = FastMCP("Hotel Facilities Discovery")
 
 # Define the tool as per the contract
 @mcp.tool()
-async def discover_facilities(
+async def discover_facilities_for_hotel(
     website_url: Optional[str] = None,
     hotel_url: Optional[str] = None,
     facilities: List[str] = [],
@@ -33,7 +33,7 @@ async def discover_facilities(
     Scrapes a hotel website to discover which facilities from a provided list are offered.
     Can use either a direct website_url or a Notion hotel_url to look up the website.
     """
-    result = discover_facilities_for_hotel(
+    result = core_discover_logic(
         website_url=website_url,
         hotel_url=hotel_url,
         facilities=facilities,
@@ -46,7 +46,7 @@ async def discover_facilities(
 notion_config = {
     "tools": [
         {
-            "name": "discover_facilities",
+            "name": "discover_facilities_for_hotel",
             "description": "Scrapes a hotel website to discover which facilities from a provided list are offered. Checks page text, meta descriptions, and image alt tags.",
             "parameters": {
                 "type": "object",
