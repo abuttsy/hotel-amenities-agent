@@ -10,7 +10,7 @@ from notion_client import Client
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Cache for facilities data to avoid redundant Notion API calls
+# Cache for facilities data
 _facilities_cache = None
 
 def scrape_website_with_sources(url):
@@ -40,9 +40,6 @@ def scrape_website_with_sources(url):
         return None, str(e)
 
 def get_notion_facilities():
-    """
-    Fetches facilities and their Alt Text synonyms from Notion.
-    """
     global _facilities_cache
     if _facilities_cache:
         return _facilities_cache
@@ -55,7 +52,6 @@ def get_notion_facilities():
 
     notion = Client(auth=token)
     try:
-        # Check for data_sources fallback
         db = notion.databases.retrieve(database_id=db_id)
         if hasattr(notion, 'data_sources') and 'data_sources' in db and db['data_sources']:
             endpoint = notion.data_sources
@@ -79,7 +75,6 @@ def get_notion_facilities():
             synonyms = []
             if props.get('Alt Text') and props['Alt Text']['rich_text']:
                 synonyms = [s.strip() for s in props['Alt Text']['rich_text'][0]['plain_text'].split(',') if s.strip()]
-
             facilities_data.append({"name": name, "synonyms": synonyms})
 
         _facilities_cache = facilities_data
@@ -88,23 +83,28 @@ def get_notion_facilities():
         logger.error(f"Failed to fetch synonyms from Notion: {e}")
         return []
 
-def discover_facilities_for_hotel(website_url, facilities=None, existing_facilities=None, hotel_name=None):
+def discover_facilities_for_hotel(website_url, facilities=None, existing_facilities=None, hotel_name=None, facilities_data=None):
     """
-    Exposed logic for discovery. If 'facilities' list of strings is provided, it uses them.
-    Otherwise, it fetches them from Notion.
+    Exposed logic for discovery.
+
+    :param website_url: The URL to scrape.
+    :param facilities: Optional list of canonical names to filter the search.
+    :param existing_facilities: Optional list of names already linked.
+    :param hotel_name: Optional name for logging.
+    :param facilities_data: Optional pre-fetched list of dicts with 'name' and 'synonyms'.
     """
     sources, error = scrape_website_with_sources(website_url)
     if error:
         return {"error": f"Failed to scrape {website_url}: {error}"}
 
-    # Fetch synonyms from Notion if possible
-    all_facilities_data = get_notion_facilities()
+    # Use provided data or fetch from Notion
+    active_data = facilities_data if facilities_data is not None else get_notion_facilities()
 
-    # If the user provided a subset of facilities to check, filter the data
+    # Filter if a specific list of canonical names was provided (from Tool Input)
     if facilities:
-        facilities_to_check = [f for f in all_facilities_data if f['name'] in facilities]
+        facilities_to_check = [f for f in active_data if f['name'] in facilities]
     else:
-        facilities_to_check = all_facilities_data
+        facilities_to_check = active_data
 
     existing_set = set(existing_facilities or [])
     matched_names = []
@@ -146,7 +146,8 @@ if __name__ == "__main__":
                 website_url=input_json.get("website_url"),
                 facilities=input_json.get("facilities"),
                 existing_facilities=input_json.get("existing_facilities"),
-                hotel_name=input_json.get("hotel_name")
+                hotel_name=input_json.get("hotel_name"),
+                facilities_data=input_json.get("facilities_data")
             )
             print(json.dumps(result, indent=2))
         except Exception as e:
