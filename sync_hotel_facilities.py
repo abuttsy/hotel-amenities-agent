@@ -20,7 +20,6 @@ HOTEL_WEBSITE_PROP = "Website"
 HOTEL_FACILITIES_RELATION_PROP = "🛝\xa0 Facilities & Amenities"
 HOTEL_UPDATE_DATE_PROP = "Amenities last updated"
 FACILITY_NAME_PROP = "facilityname"
-FACILITY_ALT_TEXT_PROP = "Alt Text"
 
 notion = Client(auth=NOTION_TOKEN)
 
@@ -41,11 +40,7 @@ def get_all_facilities():
         response = endpoint.query(**query_kwargs)
         for page in response['results']:
             name = page['properties'][FACILITY_NAME_PROP]['title'][0]['plain_text'] if page['properties'][FACILITY_NAME_PROP]['title'] else ""
-            alt_text_list = []
-            if page['properties'][FACILITY_ALT_TEXT_PROP]['rich_text']:
-                alt_text_raw = page['properties'][FACILITY_ALT_TEXT_PROP]['rich_text'][0]['plain_text']
-                alt_text_list = [t.strip() for t in alt_text_raw.split(',') if t.strip()]
-            facilities.append({"id": page['id'], "name": name, "alt_text": alt_text_list})
+            facilities.append({"id": page['id'], "name": name})
         if not response.get('has_more'): break
         start_cursor = response.get('next_cursor')
     return facilities
@@ -66,7 +61,12 @@ def get_all_hotels():
                 if prop_data['type'] == 'title' and prop_data['title']:
                     hotel_name = prop_data['title'][0]['plain_text']; break
             existing_facility_ids = [rel['id'] for rel in page['properties'][HOTEL_FACILITIES_RELATION_PROP]['relation']]
-            hotels.append({"id": page['id'], "name": hotel_name, "website": website, "existing_facility_ids": existing_facility_ids})
+            hotels.append({
+                "id": page['id'],
+                "name": hotel_name,
+                "website": website,
+                "existing_facility_ids": existing_facility_ids
+            })
         if not response.get('has_more'): break
         start_cursor = response.get('next_cursor')
     return hotels
@@ -89,13 +89,17 @@ def send_email_report(successes, failures):
 
 def main():
     if not NOTION_TOKEN: sys.exit(1)
-    print("Starting sync via shared worker logic...")
+    print("Starting sync using enhanced worker tool logic...")
     successes = []; failures = []
     try:
-        facilities = get_all_facilities(); hotels = get_all_hotels()
+        facilities_data = get_all_facilities()
+        facility_names = [f['name'] for f in facilities_data]
+        facility_name_to_id = {f['name']: f['id'] for f in facilities_data}
+        facility_id_to_name = {f['id']: f['name'] for f in facilities_data}
+
+        hotels = get_all_hotels()
     except Exception as e: print(f"Error fetching data from Notion: {e}"); sys.exit(1)
 
-    facility_map = {f['name']: f['id'] for f in facilities}
     today = datetime.now().strftime("%Y-%m-%d")
 
     for hotel in hotels:
@@ -103,7 +107,14 @@ def main():
             failures.append((hotel['name'], "No website URL in Notion")); continue
 
         print(f"Processing {hotel['name']}...")
-        discovery_result = discover_facilities_for_hotel(hotel['website'], facilities)
+        existing_names = [facility_id_to_name.get(fid) for fid in hotel['existing_facility_ids'] if fid in facility_id_to_name]
+
+        discovery_result = discover_facilities_for_hotel(
+            website_url=hotel['website'],
+            facilities=facility_names,
+            existing_facilities=existing_names,
+            hotel_name=hotel['name']
+        )
 
         if "error" in discovery_result:
             failures.append((hotel['name'], f"Discovery error: {discovery_result['error']}")); continue
@@ -113,9 +124,10 @@ def main():
         newly_matched_count = 0
 
         for name in matched_names:
-            fid = facility_map.get(name)
+            fid = facility_name_to_id.get(name)
             if fid and fid not in matched_ids:
                 matched_ids.add(fid); newly_matched_count += 1
+                # print(f"  + Found {name}: {discovery_result['evidence'].get(name)}")
 
         if newly_matched_count > 0:
             try:
@@ -127,7 +139,7 @@ def main():
                     }
                 )
                 successes.append((hotel['name'], len(matched_ids)))
-                print(f"Updated {hotel['name']} with {newly_matched_count} new facilities.")
+                print(f"Updated {hotel['name']} with {newly_matched_count} new facilities. Total: {len(matched_ids)}")
             except Exception as e: failures.append((hotel['name'], f"Notion update error: {e}"))
         else:
             successes.append((hotel['name'], len(matched_ids)))
