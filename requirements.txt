@@ -1,0 +1,6 @@
+notion-client
+beautifulsoup4
+requests
+fastapi
+uvicorn
+pydantic
